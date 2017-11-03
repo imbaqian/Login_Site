@@ -1,13 +1,17 @@
 # -*- conding:utf-8 -*-
+
+'''爬知乎妹子图片
+'''
+
 import requests
 import http.cookiejar
 import re
 import os.path
 import time
 import json
-
+import threading
 class zhihu(object):
-    '''知乎模拟登陆，由于只有手机注册的知乎号，所以只做了手机号码登录，邮箱登录没有做
+    '''知乎模拟登陆
     '''
     def __init__(self, username, password):
         #username password
@@ -101,10 +105,69 @@ class zhihu(object):
         #登陆成功后保存cookies
         self.session.cookies.save()
 
+#  任务分配
+def coroutine(func):
+    def wrapper(*args, **kwargs):
+        cr = func(*args, **kwargs)  
+        try:
+            next(cr)
+        except StopIteration: 
+            pass
+        return cr
+    return wrapper
+
+@coroutine
+def downloader_dispatch():
+    thread_list = []
+    while True:
+        pic_url_list, pagenum = (yield)
+        if pagenum == 0:
+            break;
+        t = threading.Thread(target=downloader,args=(pic_url_list, pagenum))
+        thread_list.append(t)
+        t.start()
+    for t in thread_list:
+        t.join()
+    
+# 下载器
+def downloader(url_list, pagenum):
+    headers = { 'authority': 'pic2.zhimg.com',
+                'method': 'GET',
+                'scheme': 'https',
+                'referer': 'https://www.zhihu.com/collection/38624707?page=%d' % (pagenum),
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/62.0.3202.62 Safari/537.36'}
+    for url in url_list:
+        headers['path'] = url[22:]
+        response = requests.get(url, headers=headers,timeout=10)
+        with open('./pic' + headers['path'], 'wb') as fp:
+            fp.write(response.content)
+    print('第%d页图片下载完毕！' % pagenum)
+
 if __name__ == '__main__':
-    zh = zhihu('手机号', '密码')
+    zh = zhihu('输入你的手机号', '密码')
     if zh.isLogin():
         print('login')
     else:
         print('notlogin')
         zh.login()
+    #图片存储目录
+    if not os.path.exists('pic'):
+        os.mkdir('pic')
+
+    #目标页面
+    objurl = 'https://www.zhihu.com/collection/38624707?page=1'
+    response = zh.session.get(objurl, headers=zh.headers)
+    pattern_num = r'href="\?page=(.*?)"'
+    page_num = re.findall(pattern_num, response.text)
+    #最大页面数
+    pageMax = int(page_num[-2])
+    print('总共%d页图片' % (pageMax))
+    downdis = downloader_dispatch()
+    for pagenum in range(pageMax):
+        objurl = 'https://www.zhihu.com/collection/38624707?page=%d' % (pagenum+1)
+        response = zh.session.get(objurl, headers=zh.headers)
+        pattern_pic_url = r'data-original=&quot;(.*?)&quot'
+        pic_url_list = re.findall(pattern_pic_url, response.text)
+        downdis.send((pic_url_list, pagenum+1))
+    #结束标志
+    downdis.send([],0)
